@@ -20,7 +20,7 @@ export default function App() {
   const [results, setResults] = useState([]);
 
   // TODO 2: processOrder with switch cases
-  const processOrder = (order) => {
+  const processOrder = (order, onProgress) => {
     return new Promise((resolve) => {
       let processingTime = 0; // in ms
       let discount = 0;
@@ -55,22 +55,30 @@ export default function App() {
           discount = 0;
       }
 
+      const step = 100;
+      let elapsed = 0;
+
+      const timer = setInterval(() => {
+        elapsed += step;
+        const percent = Math.min((elapsed / processingTime) * 100, 100);
+        onProgress?.(Math.floor(percent))
+        if (percent >= 100) {
+            clearInterval(timer);
+            
+            const actualTime = (processingTime / 1000).toFixed(2);
+            resolve({
+            status: 'completed',
+            order_id: order.order_id,
+            type: order.type,
+            processing_time: actualTime,
+            discount: discount,
+            message: `Order ${order.order_id} berhasil diproses`,
+            timestamp: new Date().toLocaleTimeString(),
+          })
+        }    
+      }, step);
+
       const startTime = Date.now();
-
-      setTimeout(() => {
-        const endTime = Date.now();
-        const actualTime = ((endTime - startTime) / 1000).toFixed(2);
-
-        resolve({
-          status: 'completed',
-          order_id: order.order_id,
-          type: order.type,
-          processing_time: actualTime,
-          discount: discount,
-          message: `Order ${order.order_id} berhasil diproses`,
-          timestamp: new Date().toLocaleTimeString(),
-        });
-      }, processingTime);
     });
   };
 
@@ -91,17 +99,32 @@ export default function App() {
         priority: priority,
       };
 
-      const res = await processOrder(order);
+      setResults((prev) =>
+        [ { ...order, progress: 0, status: 'processing' },
+        ...prev,]
+      );
 
-      setResults((prev) => [res, ...prev]);
+      const finished = await processOrder(order, (pct) => {
+        setResults((prev) =>
+          prev.map((item) => 
+            item.order_id === order.order_id ? { ...item, progress: pct } : item
+          )
+        )
+      });
 
+      setResults((prev) =>
+          prev.map((item) =>
+            item.order_id === finished.order_id ? { ...finished, progress: 100 } 
+          : item
+          )
+        )
       // Reset form
       setOrderId('');
       setOrderType('food');
       setQuantity('1');
       setPriority('medium');
 
-      Alert.alert('Success', `Order ${res.order_id} selesai (${res.processing_time}s)`);
+      Alert.alert('Success', `Order ${finished.order_id} selesai (${finished.processing_time}s)`);
     } catch (err) {
       Alert.alert('Error', 'Gagal memproses order');
       console.error(err);
@@ -122,13 +145,34 @@ export default function App() {
         { order_id: `BATCH-C-${timestamp}`, type: 'clothing', quantity: 1, priority: 'low' },
       ];
 
+      setResults(prev => [
+        ...orders.map(o => ({ ...o, progress: 0, status: 'processing' })),
+        ...prev,
+      ])
+
+
       const start = Date.now();
-      const promises = orders.map((o) => processOrder(o));
-      const resultsBatch = await Promise.all(promises);
+
+      const promises = orders.map((order) =>
+         processOrder(order, pct => {
+          setResults(prev => 
+            prev.map(item => 
+              item.order_id === order.order_id ? { ...item, progress: pct } : item
+            )
+          )
+      }));
+
+      const finishedOrder = await Promise.all(promises);
+
+      setResults(prev =>
+        prev.map(item => {
+          const match = finishedOrder.find(f => f.order_id === item.order_id)
+          return match ? { ...match, progress: 100 } : item
+        })
+      );
+
       const end = Date.now();
       const totalSeconds = ((end - start) / 1000).toFixed(2);
-
-      setResults((prev) => [...resultsBatch.reverse(), ...prev]);
 
       Alert.alert('Batch Completed', `Total waktu: ~${totalSeconds}s (concurrent)`);
     } catch (err) {
@@ -151,22 +195,54 @@ export default function App() {
         { order_id: `T-C-${timestamp}`, type: 'clothing', quantity: 1, priority: 'low' },
       ];
 
+      setResults(prev => [
+        ...testOrders.map(o => ({ ...o, progress: 0, status: 'processing' })),
+        ...prev,
+      ])
+
       const startSeq = Date.now();
       const seqResults = [];
       for (const o of testOrders) {
 
-        const r = await processOrder(o);
+        const r = await processOrder(o, pct => {
+          setResults(prev => 
+            prev.map(item =>
+              item.order_id === o.order_id ? { ...item, progress: pct } : item
+            )
+          )
+        });
         seqResults.push(r);
       }
       const endSeq = Date.now();
       const seqSeconds = ((endSeq - startSeq) / 1000).toFixed(2);
 
       const startCon = Date.now();
-      const conResults = await Promise.all(testOrders.map((o) => processOrder(o)));
+      const conResults = await Promise.all(
+        testOrders.map((o) => processOrder(o, pct => 
+          setResults(prev =>
+            prev.map(item =>
+              item.order_id === o.order_id ? { ...item, progress: pct } : item
+            )
+          )
+        )
+
+      ));
       const endCon = Date.now();
       const conSeconds = ((endCon - startCon) / 1000).toFixed(2);
 
-      setResults((prev) => [...conResults.reverse(), ...seqResults.reverse(), ...prev]);
+      const allResults = [...seqResults, ...conResults].map(r => ({
+        ...r,
+        progress: 100,
+      }));
+
+      setResults(prev =>
+        prev.map(item => {
+            const match = [...seqResults, ...conResults].find(
+            r => r.order_id === item.order_id
+          );
+          return match ? { ...match, progress: 100 } : item;
+        })
+      );
 
       Alert.alert(
         'Comparison',
@@ -232,6 +308,12 @@ export default function App() {
           <Text style={styles.resultText}>🕒 {result.timestamp}</Text>
           <Text style={styles.resultMessage}>{result.message}</Text>
         </View>
+
+        {result.status !== undefined && (
+        <View style={styles.progreessContainer}>
+          <View style={[styles.progressFill, { width: `${result.progress || 0}%` }]} />
+        </View>
+        )}
       </View>
     );
   };
@@ -455,6 +537,18 @@ const styles = StyleSheet.create({
   },
 
   // Result card
+  progreessContainer: {
+    height: 8,
+    backgroundColor: '#e5e7eb',
+    borderRadius: 6,
+    marginTop: 10,
+    overflow: 'hidden',
+  },
+
+  progressFill: {
+    height: '100%',
+    backgroundColor: '#3b82f6',
+  },
   resultCard: {
     backgroundColor: '#fff',
     padding: 12,
